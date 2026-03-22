@@ -1,0 +1,36 @@
+﻿# Environnement Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Secrets
+.env
+*.env
+
+# Base de données
+*.db
+*.sqlite
+
+# Logs
+logs/
+*.log
+
+# Quarantaine
+quarantine/
+
+# Node / React
+firewall-ui/node_modules/
+firewall-ui/dist/
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+*.bin
+image.exe
+App.jsx
