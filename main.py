@@ -23,8 +23,7 @@ from blocker import block_ip, load_blocked_cache_from_windows
 from explain import explain
 from port_explanations import explain_port, explain_ports_list
 from config import MODE, DEBUG, print_config
-
-MODE = "IPS"  # IPS = alerte + blocage
+from mistral_analyze import deep_analyze
 
 try:
     from notifier import notify
@@ -33,15 +32,15 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Interface auto-detection
+# Logger
 # ---------------------------------------------------------------------------
 
 def setup_logger():
     os.makedirs("logs", exist_ok=True)
     handler = RotatingFileHandler(
         "logs/alerts.log",
-        maxBytes=10 * 1024 * 1024,   # 10 MB max par fichier
-        backupCount=5,                # garde 5 anciens fichiers
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
         encoding="utf-8"
     )
     handler.setFormatter(logging.Formatter("%(message)s"))
@@ -52,16 +51,15 @@ def setup_logger():
 
 LOGGER = setup_logger()
 
-def find_active_iface() -> str | None:
-    """
-    Teste chaque interface Scapy et retourne la première qui capture un paquet
-    dans les 3 premières secondes. Affiche la liste et le résultat.
-    """
-    from scapy.all import sniff as _sniff
 
+# ---------------------------------------------------------------------------
+# Interface auto-detection
+# ---------------------------------------------------------------------------
+
+def find_active_iface() -> str | None:
+    from scapy.all import sniff as _sniff
     ifaces = get_if_list()
     print(f"[IFACE] {len(ifaces)} interfaces détectées.")
-
     for iface in ifaces:
         try:
             pkts = _sniff(iface=iface, store=True, timeout=2, count=1, filter="ip")
@@ -70,7 +68,6 @@ def find_active_iface() -> str | None:
                 return iface
         except Exception:
             continue
-
     print("[IFACE] ⚠️  Aucune interface active détectée automatiquement.")
     return None
 
@@ -80,14 +77,8 @@ def find_active_iface() -> str | None:
 # ---------------------------------------------------------------------------
 
 def reload_blocked_ips():
-    """
-    Recharge les IPs déjà bloquées depuis Windows Firewall dans BLOCKED_IPS
-    et dans blocked_cache, pour assurer la cohérence après un redémarrage.
-    """
     import re, subprocess
-
     RULE_PREFIX = "AlertExplain_Block_"
-
     try:
         res = subprocess.run(
             ["netsh", "advfirewall", "firewall", "show", "rule", "name=all"],
@@ -96,7 +87,6 @@ def reload_blocked_ips():
         if res.returncode != 0:
             print("[STARTUP] Impossible de lire les règles Windows Firewall.")
             return
-
         pattern = re.compile(
             rf"Rule Name:\s+{re.escape(RULE_PREFIX)}([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)_(IN|OUT)"
         )
@@ -105,14 +95,9 @@ def reload_blocked_ips():
             m = pattern.search(line)
             if m:
                 ips.add(m.group(1))
-
-        # Injecter dans BLOCKED_IPS (le set importé depuis rules.py)
         BLOCKED_IPS.update(ips)
-        # Pré-remplir le cache interne de blocker.py
         load_blocked_cache_from_windows(list(ips))
-
         print(f"[STARTUP] {len(ips)} IPs bloquées rechargées depuis Windows Firewall.")
-
     except Exception as e:
         print(f"[STARTUP] reload_blocked_ips exception: {e}")
 
@@ -120,9 +105,6 @@ def reload_blocked_ips():
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
-
-
-
 
 def build_port_context_single(dport: int) -> dict:
     info = explain_port(dport)
@@ -148,7 +130,6 @@ def build_port_context_multi(ports) -> dict:
 
 def enrich_info_with_port_analysis(info: dict, event_type: str, context: dict) -> dict:
     info = dict(info)
-
     if event_type == "SENSITIVE_PORT" and context.get("dport") is not None:
         extra = build_port_context_single(context["dport"])
         info["what"] = (
@@ -157,7 +138,6 @@ def enrich_info_with_port_analysis(info: dict, event_type: str, context: dict) -
         )
         info["risk"] = f"{info.get('risk','')} | Risque service: {extra['service_risk']}"
         info["do"]   = f"{info.get('do','')} | Vérifier si ce service doit être exposé."
-
     elif event_type == "PORT_SCAN" and context.get("ports"):
         extra = build_port_context_multi(context["ports"])
         info["what"] = (
@@ -166,13 +146,10 @@ def enrich_info_with_port_analysis(info: dict, event_type: str, context: dict) -
         )
         info["risk"] = f"{info.get('risk','')} | Risques potentiels: {extra['risks_summary']}"
         info["do"]   = f"{info.get('do','')} | Identifier si ces services sont utilisés sur le poste."
-
     return info
 
 
 def log_alert(event_type: str, context: dict):
-    
-
     info = explain(event_type, context)
     info = enrich_info_with_port_analysis(info, event_type, context)
 
@@ -224,7 +201,42 @@ def log_alert(event_type: str, context: dict):
     if line2: LOGGER.info(line2)
     LOGGER.info(line3)
     LOGGER.info(line4)
-    LOGGER.info(line5 + "\n") 
+    LOGGER.info(line5 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Mistral async — Deep Packet Inspection
+# ---------------------------------------------------------------------------
+
+def _run_mistral_async(event_type: str, context: dict, pkt):
+    """
+    Lance l'analyse Mistral dans un thread séparé pour ne pas
+    bloquer la capture réseau (Mistral prend ~1-2 secondes).
+    """
+    def _analyze():
+        try:
+            analysis = deep_analyze(event_type, context, pkt)
+            if analysis:
+                src = context.get("src", "?")
+                print(f"\n[MISTRAL] {event_type} — {src}")
+                print(f"          {analysis}\n")
+
+                send_event({
+                    "event_type": "MISTRAL_ANALYSIS",
+                    "severity":   "HIGH",
+                    "title":      f"Analyse IA — {event_type}",
+                    "src":        src,
+                    "dst":        context.get("dst"),
+                    "proto":      context.get("proto"),
+                    "dport":      context.get("dport"),
+                    "what":       analysis,
+                    "risk":       "Analyse Deep Packet Inspection par Mistral AI",
+                    "do":         "Voir l'analyse complète dans le dashboard.",
+                })
+        except Exception as e:
+            print(f"[MISTRAL] Error in async analysis: {e}")
+
+    Thread(target=_analyze, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -256,14 +268,16 @@ def handle_packet(pkt):
 
     if src in BLOCKED_IPS:
         if allow(f"BLACKLIST:{src}", 300):
-            log_alert("BLOCKED_IP", {"src": src, "dst": dst, "proto": proto})
+            context = {"src": src, "dst": dst, "proto": proto}
+            log_alert("BLOCKED_IP", context)
+            _run_mistral_async("BLOCKED_IP", context, pkt)
         return
 
     if dport in SENSITIVE_PORTS:
         if allow(f"SENSITIVE:{src}:{dport}:{proto}", 60):
-            log_alert("SENSITIVE_PORT", {
-                "src": src, "dst": dst, "dport": dport, "proto": proto
-            })
+            context = {"src": src, "dst": dst, "dport": dport, "proto": proto}
+            log_alert("SENSITIVE_PORT", context)
+            _run_mistral_async("SENSITIVE_PORT", context, pkt)
         return
 
     key = f"{src}|{proto}"
@@ -271,9 +285,9 @@ def handle_packet(pkt):
 
     if scan_detected and ports:
         if allow(f"PORT_SCAN:{key}", 30):
-            log_alert("PORT_SCAN", {
-                "src": src, "dst": dst, "ports": ports, "proto": proto
-            })
+            context = {"src": src, "dst": dst, "ports": ports, "proto": proto}
+            log_alert("PORT_SCAN", context)
+            _run_mistral_async("PORT_SCAN", context, pkt)
 
         if MODE == "IPS" and should_block(key):
             ok = block_ip(src)
@@ -291,18 +305,15 @@ def main():
     parser.add_argument(
         "--iface", "-i",
         default=None,
-        help="Interface réseau Scapy (ex: 'eth0' ou GUID Windows). "
-             "Si absent, détection automatique."
+        help="Interface réseau Scapy. Si absent, détection automatique."
     )
     args = parser.parse_args()
 
     print("✅ Firewall Alert & Explain - Mode surveillance")
     print("⚠️  Lance VS Code en ADMIN sinon sniff peut échouer.")
 
-    # 1. Recharger les IPs bloquées depuis Windows Firewall
     reload_blocked_ips()
 
-    # 2. Choisir l'interface
     iface = args.iface
     if iface is None:
         print("🔍 Détection automatique de l'interface réseau...")
@@ -313,13 +324,13 @@ def main():
     else:
         print("📡 Capture sur toutes les interfaces (fallback).")
 
-    # 3. Démarrer le moniteur de fichiers
     print("🗂️  Module fichiers: ON (Downloads/Desktop)")
     t = Thread(target=run_file_monitor, daemon=True)
     t.start()
 
-    # 4. Lancer le sniff
+    print("🤖 Mistral AI: ON (Deep Packet Inspection)")
     print("Capture en cours... (Ctrl+C pour arrêter)\n")
+
     sniff_kwargs = dict(prn=handle_packet, store=False, filter="ip")
     if iface:
         sniff_kwargs["iface"] = iface
