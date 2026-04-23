@@ -1,4 +1,7 @@
+
+
 import { useState, useEffect, useRef } from "react";
+import MistralChat from "./MistralChat";
 
 const API = "http://127.0.0.1:5000";
 const API_SECRET = import.meta.env?.VITE_API_SECRET || "";
@@ -84,6 +87,10 @@ const css = `
   .btn-secondary:hover { border-color: var(--text); color: var(--text); }
   .btn-danger { background: transparent; border: 1px solid rgba(255,68,68,0.4); color: #ff6666; }
   .btn-danger:hover { background: rgba(255,68,68,0.1); }
+  .btn-mistral { background: transparent; border: 1px solid #ff7000; color: #ff7000;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 6px 14px; cursor: pointer; transition: all .15s; }
+  .btn-mistral:hover { background: rgba(255,112,0,0.15); color: #ffaa44; border-color: #ffaa44; }
 
   /* Inspect modal */
   .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75);
@@ -209,14 +216,15 @@ function InspectModal({ ip, onClose }) {
 // ---------------------------------------------------------------------------
 
 export default function FirewallManager() {
-  const [tab, setTab]         = useState("events");
-  const [scanOn, setScanOn]   = useState(true);
-  const [events, setEvents]   = useState([]);
-  const [ipsData, setIpsData] = useState({ blocked: [], not_blocked: [], blocked_count: 0 });
-  const [ipInput, setIpInput] = useState("");
-  const [error, setError]     = useState("");
-  const [time, setTime]       = useState(new Date());
-  const [inspectIp, setInspectIp] = useState(null);  // IP currently being inspected
+  const [tab, setTab]             = useState("events");
+  const [scanOn, setScanOn]       = useState(true);
+  const [events, setEvents]       = useState([]);
+  const [ipsData, setIpsData]     = useState({ blocked: [], not_blocked: [], blocked_count: 0 });
+  const [ipInput, setIpInput]     = useState("");
+  const [error, setError]         = useState("");
+  const [time, setTime]           = useState(new Date());
+  const [inspectIp, setInspectIp] = useState(null);
+  const [showMistral, setShowMistral] = useState(false);  // ← NOUVEAU
 
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000);
@@ -299,6 +307,9 @@ export default function FirewallManager() {
       {/* INSPECT MODAL */}
       {inspectIp && <InspectModal ip={inspectIp} onClose={() => setInspectIp(null)} />}
 
+      {/* MISTRAL CHAT MODAL */}
+      {showMistral && <MistralChat onClose={() => setShowMistral(false)} />}
+
       <div className="app">
         {/* TOPBAR */}
         <div className="topbar">
@@ -313,6 +324,12 @@ export default function FirewallManager() {
             ))}
           </div>
           <div className="spacer" />
+
+          {/* BOUTON MISTRAL AI */}
+          <button className="btn-mistral" onClick={() => setShowMistral(true)} style={{marginRight: 12}}>
+            🤖 Assistant Mistral
+          </button>
+
           <button className="btn btn-secondary" style={{marginRight:8}} onClick={toggleScan}>
             {scanOn ? "⏹ Stop" : "▶ Start"}
           </button>

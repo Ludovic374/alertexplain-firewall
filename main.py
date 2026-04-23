@@ -1,5 +1,6 @@
 # main.py
 import os
+import sys
 DEBUG = os.getenv("ALERTEXPLAIN_DEBUG", "0") == "1"
 
 from logging.handlers import RotatingFileHandler
@@ -59,16 +60,16 @@ LOGGER = setup_logger()
 def find_active_iface() -> str | None:
     from scapy.all import sniff as _sniff
     ifaces = get_if_list()
-    print(f"[IFACE] {len(ifaces)} interfaces détectées.")
+    print(f"[IFACE] {len(ifaces)} interfaces detectees.")
     for iface in ifaces:
         try:
             pkts = _sniff(iface=iface, store=True, timeout=2, count=1, filter="ip")
             if pkts:
-                print(f"[IFACE] Interface active trouvée : {iface}")
+                print(f"[IFACE] Interface active trouvee : {iface}")
                 return iface
         except Exception:
             continue
-    print("[IFACE] ⚠️  Aucune interface active détectée automatiquement.")
+    print("[IFACE] Aucune interface active detectee automatiquement.")
     return None
 
 
@@ -85,7 +86,7 @@ def reload_blocked_ips():
             capture_output=True, text=True, timeout=10
         )
         if res.returncode != 0:
-            print("[STARTUP] Impossible de lire les règles Windows Firewall.")
+            print("[STARTUP] Impossible de lire les regles Windows Firewall.")
             return
         pattern = re.compile(
             rf"Rule Name:\s+{re.escape(RULE_PREFIX)}([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)_(IN|OUT)"
@@ -97,7 +98,7 @@ def reload_blocked_ips():
                 ips.add(m.group(1))
         BLOCKED_IPS.update(ips)
         load_blocked_cache_from_windows(list(ips))
-        print(f"[STARTUP] {len(ips)} IPs bloquées rechargées depuis Windows Firewall.")
+        print(f"[STARTUP] {len(ips)} IPs bloquees rechargees depuis Windows Firewall.")
     except Exception as e:
         print(f"[STARTUP] reload_blocked_ips exception: {e}")
 
@@ -137,15 +138,15 @@ def enrich_info_with_port_analysis(info: dict, event_type: str, context: dict) -
             f"({extra['service_desc']}) | Cible probable: {extra['likely_target']}"
         )
         info["risk"] = f"{info.get('risk','')} | Risque service: {extra['service_risk']}"
-        info["do"]   = f"{info.get('do','')} | Vérifier si ce service doit être exposé."
+        info["do"]   = f"{info.get('do','')} | Verifier si ce service doit etre expose."
     elif event_type == "PORT_SCAN" and context.get("ports"):
         extra = build_port_context_multi(context["ports"])
         info["what"] = (
-            f"{info.get('what','')} | Services visés: {extra['services_summary']} | "
-            f"Ressources visées: {extra['targets_summary']}"
+            f"{info.get('what','')} | Services vises: {extra['services_summary']} | "
+            f"Ressources visees: {extra['targets_summary']}"
         )
         info["risk"] = f"{info.get('risk','')} | Risques potentiels: {extra['risks_summary']}"
-        info["do"]   = f"{info.get('do','')} | Identifier si ces services sont utilisés sur le poste."
+        info["do"]   = f"{info.get('do','')} | Identifier si ces services sont utilises sur le poste."
     return info
 
 
@@ -193,7 +194,7 @@ def log_alert(event_type: str, context: dict):
 
     if notify is not None:
         try:
-            notify(f"{sev} - {title}", info.get("what", "Alerte réseau détectée"))
+            notify(f"{sev} - {title}", info.get("what", "Alerte reseau detectee"))
         except Exception as e:
             print(f"[WARN] Notification failed: {e}")
 
@@ -205,33 +206,29 @@ def log_alert(event_type: str, context: dict):
 
 
 # ---------------------------------------------------------------------------
-# Mistral async — Deep Packet Inspection
+# Mistral async -- Deep Packet Inspection
 # ---------------------------------------------------------------------------
 
 def _run_mistral_async(event_type: str, context: dict, pkt):
-    """
-    Lance l'analyse Mistral dans un thread séparé pour ne pas
-    bloquer la capture réseau (Mistral prend ~1-2 secondes).
-    """
     def _analyze():
         try:
             analysis = deep_analyze(event_type, context, pkt)
             if analysis:
                 src = context.get("src", "?")
-                print(f"\n[MISTRAL] {event_type} — {src}")
+                print(f"\n[MISTRAL] {event_type} -- {src}")
                 print(f"          {analysis}\n")
 
                 send_event({
                     "event_type": "MISTRAL_ANALYSIS",
                     "severity":   "HIGH",
-                    "title":      f"Analyse IA — {event_type}",
+                    "title":      f"Analyse IA -- {event_type}",
                     "src":        src,
                     "dst":        context.get("dst"),
                     "proto":      context.get("proto"),
                     "dport":      context.get("dport"),
                     "what":       analysis,
                     "risk":       "Analyse Deep Packet Inspection par Mistral AI",
-                    "do":         "Voir l'analyse complète dans le dashboard.",
+                    "do":         "Voir l'analyse complete dans le dashboard.",
                 })
         except Exception as e:
             print(f"[MISTRAL] Error in async analysis: {e}")
@@ -301,35 +298,43 @@ def handle_packet(pkt):
 # ---------------------------------------------------------------------------
 
 def main():
+    # Force UTF-8 output to avoid emoji encoding errors on Windows
+    if sys.stdout.encoding != "utf-8":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="AlertExplain Firewall")
     parser.add_argument(
         "--iface", "-i",
         default=None,
-        help="Interface réseau Scapy. Si absent, détection automatique."
+        help="Interface reseau Scapy. Si absent, detection automatique."
     )
     args = parser.parse_args()
 
-    print("✅ Firewall Alert & Explain - Mode surveillance")
-    print("⚠️  Lance VS Code en ADMIN sinon sniff peut échouer.")
+    print("[OK] Firewall Alert & Explain - Mode surveillance")
+    print("[WARN] Lance en ADMIN sinon sniff peut echouer.")
 
     reload_blocked_ips()
 
     iface = args.iface
     if iface is None:
-        print("🔍 Détection automatique de l'interface réseau...")
+        print("[IFACE] Detection automatique de l interface reseau...")
         iface = find_active_iface()
 
     if iface:
-        print(f"📡 Capture sur : {iface}")
+        print(f"[IFACE] Capture sur : {iface}")
     else:
-        print("📡 Capture sur toutes les interfaces (fallback).")
+        print("[IFACE] Capture sur toutes les interfaces (fallback).")
 
-    print("🗂️  Module fichiers: ON (Downloads/Desktop)")
+    print("[FILE] Module fichiers: ON (Downloads/Desktop)")
     t = Thread(target=run_file_monitor, daemon=True)
     t.start()
 
-    print("🤖 Mistral AI: ON (Deep Packet Inspection)")
-    print("Capture en cours... (Ctrl+C pour arrêter)\n")
+    print("[AI] Mistral AI: ON (Deep Packet Inspection)")
+    print("[OK] Capture en cours... (Ctrl+C pour arreter)\n")
 
     sniff_kwargs = dict(prn=handle_packet, store=False, filter="ip")
     if iface:
